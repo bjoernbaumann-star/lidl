@@ -1414,11 +1414,19 @@
     return { seats:S.seats, blocked:S.blocked, bins:S.bins,
              paris:S.paris||{}, nofeat:S.nofeat||{}, bonds:S.bonds||[] };
   }
-  function applyState(st){
-    snapshot();
-    S.seats=st.seats||{}; S.blocked=st.blocked||{}; S.bins=st.bins||{};
-    S.paris=st.paris||{}; S.nofeat=st.nofeat||{}; S.bonds=st.bonds||[];
-    selIds=[]; save(); paintAll(); renderList();
+  function applyState(st, label){
+    /* niemals die offene Version überschreiben: immer als neue Version anlegen */
+    stash();
+    var nm=uniqueName(label || 'Geladener Stand');
+    S.versions[nm]={ seats:st.seats||{}, blocked:st.blocked||{}, bins:st.bins||{} };
+    S.current=nm;
+    S.seats=S.versions[nm].seats; S.blocked=S.versions[nm].blocked; S.bins=S.versions[nm].bins;
+    if (st.paris)  S.paris=st.paris;
+    if (st.nofeat) S.nofeat=st.nofeat;
+    if (st.bonds)  S.bonds=st.bonds;
+    selIds=[]; undoStack=[];
+    save(); paintAll(); renderList(); renderVersions();
+    return nm;
   }
 
   function srvMsg(t){ var e=$('srvmsg'); if (e) e.textContent=t||''; }
@@ -1478,8 +1486,8 @@
     .then(function(j){
       if (!j.ok) throw new Error(j.error||'Fehler');
       return decState(j.item.blob).then(function(st){
-        applyState(st); srvCur=id; renderSrv();
-        srvMsg('Geladen: „'+j.item.name+'"'+(j.item.author?' von '+j.item.author:'')+'.');
+        var nm=applyState(st, j.item.name); srvCur=id; renderSrv();
+        srvMsg('Als neue Version „'+nm+'" geladen'+(j.item.author?' — von '+j.item.author:'')+'.');
       });
     }).catch(function(e){ srvMsg('Laden fehlgeschlagen: '+e.message); });
   };
@@ -1505,8 +1513,8 @@
       try{
         var j=JSON.parse(r.result);
         if (!j.state) throw new Error('Kein Sitzplan-Stand');
-        applyState(j.state);
-        srvMsg('Geladen: „'+(j.name||'Stand')+'".');
+        var nm2=applyState(j.state, j.name||'Aus Datei');
+        srvMsg('Als neue Version „'+nm2+'" geladen.');
       }catch(e){ srvMsg('Datei konnte nicht gelesen werden: '+e.message); }
       inp.value='';
     };
@@ -1542,7 +1550,10 @@
 
   if (location.hash.indexOf('#s=')===0){
     unpackState(decodeURIComponent(location.hash.slice(3))).then(function(j){
-      if (j && j.state){ applyState(j.state); srvMsg('Stand aus dem Link geladen: „'+(j.name||'Stand')+'".'); }
+      if (j && j.state){
+        var nm3=applyState(j.state, j.name||'Aus Link');
+        srvMsg('Stand aus dem Link als neue Version „'+nm3+'" angelegt — deine eigenen Stände bleiben erhalten.');
+      }
     }).catch(function(){ srvMsg('Der Stand im Link ließ sich nicht lesen.'); });
   }
 
