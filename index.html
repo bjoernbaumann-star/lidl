@@ -273,6 +273,17 @@
   .crow2 > * { flex:1; }
 
   /* ---- Versionen ---- */
+  .srvlist { max-height:180px; overflow-y:auto; margin:0 -4px 8px; }
+  .srvitem { display:flex; align-items:center; gap:6px; padding:5px 7px; border-radius:6px; cursor:pointer; }
+  .srvitem:hover { background:#f2f2f2; }
+  .srvitem.cur { background:#eef5ff; }
+  .srvitem .sn { flex:1; min-width:0; }
+  .srvitem .sn b { display:block; font-size:12px; font-weight:600; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .srvitem .sn span { font-size:10px; color:#9a9a9a; }
+  .srvitem .sdel { opacity:0; font-size:14px; color:#b0b0b0; padding:0 3px; }
+  .srvitem:hover .sdel { opacity:1; }
+  .srvitem .sdel:hover { color:#c0392b; }
   .verrow { display:flex; gap:6px; }
   .verrow select { flex:1; min-width:0; }
   .verbtns { display:flex; gap:6px; margin-top:8px; }
@@ -483,6 +494,25 @@
       <button id="cselnone">×</button>
     </div>
   </div>
+
+    <div class="card">
+      <h2>Gemeinsame Stände</h2>
+      <input type="text" id="who" placeholder="Dein Name" style="width:100%;padding:6px 8px;border:1px solid #d8d8d8;border-radius:6px;font:inherit;font-size:12px;margin-bottom:6px">
+      <div id="srvlist" class="srvlist"></div>
+      <div class="row2">
+        <button id="srvsave" class="primary">Auf Server speichern</button>
+        <button id="srvrefresh">Neu laden</button>
+      </div>
+      <div class="row2">
+        <button id="filesave">Als Datei</button>
+        <button id="fileload">Datei laden</button>
+      </div>
+      <div class="row2">
+        <button id="linkcopy">Link mit Stand kopieren</button>
+      </div>
+      <input type="file" id="fileinp" accept="application/json" style="display:none">
+      <div id="srvmsg" style="font-size:11px;color:#6b6b6b;margin-top:6px;line-height:1.5"></div>
+    </div>
 
     <div class="card">
       <h2>Export</h2>
@@ -1344,6 +1374,182 @@
   $('csz').oninput=function(){ S.photoSize=parseInt(this.value,10); applySize(); save(); };
   applySize(); applyZoom();
 
+  /* ---------- Gemeinsame Stände auf dem Server ---------- */
+  var API='api.php', srvItems=[], srvCur=null, PASS=window.__pass||null;
+
+  function b64(buf){
+    var b='', a=new Uint8Array(buf), step=8192;
+    for (var i=0;i<a.length;i+=step) b+=String.fromCharCode.apply(null,a.subarray(i,i+step));
+    return btoa(b);
+  }
+  function unb64(s){ return Uint8Array.from(atob(s), function(c){ return c.charCodeAt(0); }); }
+
+  function keyFrom(salt){
+    var enc=new TextEncoder();
+    return crypto.subtle.importKey('raw', enc.encode(PASS||''), 'PBKDF2', false, ['deriveKey'])
+      .then(function(base){
+        return crypto.subtle.deriveKey({name:'PBKDF2', salt:salt, iterations:120000, hash:'SHA-256'},
+          base, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+      });
+  }
+  function encState(obj){
+    var salt=crypto.getRandomValues(new Uint8Array(16));
+    var iv=crypto.getRandomValues(new Uint8Array(12));
+    return keyFrom(salt).then(function(k){
+      return crypto.subtle.encrypt({name:'AES-GCM', iv:iv}, k,
+        new TextEncoder().encode(JSON.stringify(obj)));
+    }).then(function(ct){
+      return b64(salt)+'.'+b64(iv)+'.'+b64(ct);
+    });
+  }
+  function decState(blob){
+    var p=String(blob).split('.');
+    if (p.length!==3) return Promise.reject(new Error('Format'));
+    return keyFrom(unb64(p[0])).then(function(k){
+      return crypto.subtle.decrypt({name:'AES-GCM', iv:unb64(p[1])}, k, unb64(p[2]));
+    }).then(function(buf){ return JSON.parse(new TextDecoder().decode(buf)); });
+  }
+
+  function snapshotState(){
+    return { seats:S.seats, blocked:S.blocked, bins:S.bins,
+             paris:S.paris||{}, nofeat:S.nofeat||{}, bonds:S.bonds||[] };
+  }
+  function applyState(st){
+    snapshot();
+    S.seats=st.seats||{}; S.blocked=st.blocked||{}; S.bins=st.bins||{};
+    S.paris=st.paris||{}; S.nofeat=st.nofeat||{}; S.bonds=st.bonds||[];
+    selIds=[]; save(); paintAll(); renderList();
+  }
+
+  function srvMsg(t){ var e=$('srvmsg'); if (e) e.textContent=t||''; }
+  function renderSrv(){
+    var box=$('srvlist');
+    if (!box) return;
+    box.innerHTML = srvItems.length ? srvItems.map(function(it){
+      var d=new Date((it.updated||0)*1000);
+      var when=('0'+d.getDate()).slice(-2)+'.'+('0'+(d.getMonth()+1)).slice(-2)+'. '+
+               ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+      return '<div class="srvitem'+(srvCur===it.id?' cur':'')+'" data-id="'+it.id+'">'+
+        '<span class="sn"><b>'+esc(it.name)+'</b><span>'+
+        (it.author?esc(it.author)+' · ':'')+when+'</span></span>'+
+        '<span class="sdel" data-del="'+it.id+'" title="Löschen">×</span></div>';
+    }).join('') : '<div class="empty">Noch nichts gespeichert.</div>';
+  }
+  function srvList(){
+    return fetch(API+'?a=list').then(function(r){ return r.json(); }).then(function(j){
+      if (!j.ok) throw new Error(j.error||'Fehler');
+      srvItems=j.items||[]; renderSrv();
+    }).catch(function(){
+      $('srvsave').disabled=true; $('srvrefresh').disabled=true;
+      $('srvlist').innerHTML='<div class="empty">Kein Server verbunden — Speichern läuft über Datei oder Link.</div>';
+    });
+  }
+  $('srvrefresh').onclick=function(){ srvMsg('Lade …'); srvList().then(function(){ srvMsg(''); }); };
+
+  $('srvsave').onclick=function(){
+    var who=$('who').value.trim();
+    if (!who){ srvMsg('Bitte zuerst deinen Namen eintragen.'); $('who').focus(); return; }
+    try{ localStorage.setItem('seatplan_who', who); }catch(e){}
+    var name=prompt('Name für diesen Stand:', S.current||'Variante');
+    if (!name) return;
+    srvMsg('Verschlüssele und speichere …');
+    encState(snapshotState()).then(function(blob){
+      return fetch(API+'?a=save', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:name, author:who, blob:blob})});
+    }).then(function(r){ return r.json(); }).then(function(j){
+      if (!j.ok) throw new Error(j.error||'Fehler');
+      srvCur=j.id; srvMsg('Gespeichert als „'+name+'".');
+      return srvList();
+    }).catch(function(e){ srvMsg('Speichern fehlgeschlagen: '+e.message); });
+  };
+
+  $('srvlist').onclick=function(e){
+    var del=e.target.dataset.del;
+    if (del){
+      if (!confirm('Diesen Stand für alle löschen?')) return;
+      fetch(API+'?a=delete',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({id:del})}).then(function(){ srvList(); });
+      return;
+    }
+    var it=e.target.closest('.srvitem'); if(!it) return;
+    var id=it.dataset.id;
+    srvMsg('Lade Stand …');
+    fetch(API+'?a=load&id='+encodeURIComponent(id)).then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j.ok) throw new Error(j.error||'Fehler');
+      return decState(j.item.blob).then(function(st){
+        applyState(st); srvCur=id; renderSrv();
+        srvMsg('Geladen: „'+j.item.name+'"'+(j.item.author?' von '+j.item.author:'')+'.');
+      });
+    }).catch(function(e){ srvMsg('Laden fehlgeschlagen: '+e.message); });
+  };
+
+
+  /* ---------- Stand als Datei und als Link ---------- */
+  function stateBlobJSON(){
+    return JSON.stringify({ v:1, name:S.current||'Stand', saved:new Date().toISOString(),
+                            state:snapshotState() });
+  }
+  $('filesave').onclick=function(){
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([stateBlobJSON()],{type:'application/json'}));
+    a.download='sitzplan_'+(S.current||'stand').replace(/[^\w\-]+/g,'_')+'.json';
+    a.click();
+    srvMsg('Datei gespeichert — die kannst du verschicken.');
+  };
+  $('fileload').onclick=function(){ $('fileinp').click(); };
+  $('fileinp').onchange=function(){
+    var f=this.files&&this.files[0]; if(!f) return;
+    var inp=this, r=new FileReader();
+    r.onload=function(){
+      try{
+        var j=JSON.parse(r.result);
+        if (!j.state) throw new Error('Kein Sitzplan-Stand');
+        applyState(j.state);
+        srvMsg('Geladen: „'+(j.name||'Stand')+'".');
+      }catch(e){ srvMsg('Datei konnte nicht gelesen werden: '+e.message); }
+      inp.value='';
+    };
+    r.readAsText(f);
+  };
+
+  function packState(){
+    var json=stateBlobJSON();
+    if (window.CompressionStream){
+      var cs=new CompressionStream('gzip');
+      var w=cs.writable.getWriter(); w.write(new TextEncoder().encode(json)); w.close();
+      return new Response(cs.readable).arrayBuffer().then(function(buf){ return 'z'+b64(buf); });
+    }
+    return Promise.resolve('p'+b64(new TextEncoder().encode(json).buffer));
+  }
+  function unpackState(s){
+    var body=s.slice(1), bytes=unb64(body);
+    if (s[0]==='z' && window.DecompressionStream){
+      var ds=new DecompressionStream('gzip');
+      var w=ds.writable.getWriter(); w.write(bytes); w.close();
+      return new Response(ds.readable).text().then(JSON.parse);
+    }
+    return Promise.resolve(JSON.parse(new TextDecoder().decode(bytes)));
+  }
+  $('linkcopy').onclick=function(){
+    packState().then(function(p){
+      var url=location.origin+location.pathname+'#s='+encodeURIComponent(p);
+      return (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
+        .then(function(){ srvMsg('Link kopiert ('+Math.round(url.length/1024)+' KB) — wer ihn öffnet, sieht diesen Stand.'); })
+        .catch(function(){ prompt('Link kopieren:', url); });
+    }).catch(function(e){ srvMsg('Link konnte nicht erzeugt werden: '+e.message); });
+  };
+
+  if (location.hash.indexOf('#s=')===0){
+    unpackState(decodeURIComponent(location.hash.slice(3))).then(function(j){
+      if (j && j.state){ applyState(j.state); srvMsg('Stand aus dem Link geladen: „'+(j.name||'Stand')+'".'); }
+    }).catch(function(){ srvMsg('Der Stand im Link ließ sich nicht lesen.'); });
+  }
+
+  try{ var w=localStorage.getItem('seatplan_who'); if (w) $('who').value=w; }catch(e){}
+  srvList();
+
+
   /* Karten im linken Menü ein- und ausklappen */
   var CLOSED=['Version','Google Sheet','Fotos aktualisieren','Personen hinzufügen','Export'];
   if (!S.cards) { S.cards={}; CLOSED.forEach(function(t){ S.cards[t]=1; }); }
@@ -2029,6 +2235,7 @@
     };
   }
   function tryUnlock(pw, silent){
+    window.__pass=pw;
     if (!pw) return;
     gerr.textContent='Entsperre …'; gbtn.disabled=true;
     unlock(pw).then(function(){
