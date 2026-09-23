@@ -510,6 +510,11 @@
       <div class="row2">
         <button id="linkcopy">Link mit Stand kopieren</button>
       </div>
+      <div style="border-top:1px solid #eee;margin:10px -12px 8px"></div>
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#8a8a8a;font-weight:650;margin-bottom:6px">Veröffentlicht — für alle sichtbar</div>
+      <div id="publist" class="srvlist"></div>
+      <div class="row2"><button id="pubrefresh">Liste aktualisieren</button></div>
+      <div id="pubmsg" style="font-size:11px;color:#6b6b6b;margin-top:6px;line-height:1.5"></div>
       <input type="file" id="fileinp" accept="application/json" style="display:none">
       <div id="srvmsg" style="font-size:11px;color:#6b6b6b;margin-top:6px;line-height:1.5"></div>
     </div>
@@ -1556,6 +1561,43 @@
       }
     }).catch(function(){ srvMsg('Der Stand im Link ließ sich nicht lesen.'); });
   }
+
+
+  /* ---------- Veröffentlichte Stände aus dem Repo ---------- */
+  var GH='https://api.github.com/repos/bjoernbaumann-star/lidl/contents/staende';
+  function renderPub(items){
+    var box=$('publist');
+    box.innerHTML = items.length ? items.map(function(it){
+      return '<div class="srvitem" data-url="'+it.url+'">'+
+        '<span class="sn"><b>'+esc(it.title)+'</b><span>'+esc(it.sub)+'</span></span></div>';
+    }).join('') : '<div class="empty">Noch nichts veröffentlicht.</div>';
+  }
+  function loadPub(){
+    return fetch(GH, {headers:{'Accept':'application/vnd.github+json'}})
+      .then(function(r){ if(!r.ok) throw new Error(r.status===404?'noch kein Ordner':'HTTP '+r.status); return r.json(); })
+      .then(function(list){
+        var items=(list||[]).filter(function(f){ return /\.json$/i.test(f.name); })
+          .map(function(f){ return {url:f.download_url, title:f.name.replace(/\.json$/i,'').replace(/[-_]/g,' '),
+                                    sub:Math.round(f.size/1024*10)/10+' KB'}; });
+        renderPub(items);
+        $('pubmsg').textContent = items.length ? items.length+' Stand'+(items.length===1?'':'e')+' veröffentlicht.' : '';
+      })
+      .catch(function(e){
+        renderPub([]);
+        $('pubmsg').textContent='Liste nicht abrufbar ('+e.message+').';
+      });
+  }
+  $('publist').onclick=function(e){
+    var it=e.target.closest('.srvitem'); if(!it) return;
+    $('pubmsg').textContent='Lade …';
+    fetch(it.dataset.url).then(function(r){ return r.json(); }).then(function(j){
+      var st=j.state||j;
+      var nm=applyState(st, j.name || it.querySelector('b').textContent);
+      $('pubmsg').textContent='Als neue Version „'+nm+'" geladen'+(j.author?' — von '+j.author:'')+'.';
+    }).catch(function(e){ $('pubmsg').textContent='Laden fehlgeschlagen: '+e.message; });
+  };
+  $('pubrefresh').onclick=function(){ $('pubmsg').textContent='Lade …'; loadPub(); };
+  loadPub();
 
   try{ var w=localStorage.getItem('seatplan_who'); if (w) $('who').value=w; }catch(e){}
   srvList();
